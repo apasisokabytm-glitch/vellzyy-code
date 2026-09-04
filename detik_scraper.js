@@ -1,3 +1,12 @@
+/*
+* Judul : Detik Scraper
+* Base Url : https://detik.com
+* Author : Vellzyy
+* Channel Author : https://whatsapp.com/channel/0029VbDl6c1KmCPJErq9ox3F
+* Deskripsi : Scraper untuk mengambil data berita terbaru dari Detik.com.
+* Note : Jangan hapus watermark
+*/
+
 const axios = require('axios');
 const cheerio = require('cheerio');
 
