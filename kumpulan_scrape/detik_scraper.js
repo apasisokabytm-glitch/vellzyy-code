@@ -39,7 +39,15 @@ async function scrapeDetik() {
 
             const url = new URL(urlRaw, BASE_URL).href;
             const title = cleanText($(element).find('.media__title').text() || $(element).find('h2, h3').text());
-            const image = $(element).find('.media__image img').attr('src') || $(element).find('img').attr('src') || null;
+            
+            // Mengambil image dari img src atau i-img attribute (lazy load detik)
+            let image = $(element).find('.media__image img').attr('src') || $(element).find('img').attr('src') || $(element).attr('i-img') || null;
+            
+            // Detik sering menambahkan query string image di i-img-qs
+            const imgQs = $(element).attr('i-img-qs');
+            if (image && imgQs && !image.includes('?')) {
+                image += imgQs;
+            }
             
             // Extract kategori dan waktu
             const dateStrRaw = $(element).find('.media__date').text();
