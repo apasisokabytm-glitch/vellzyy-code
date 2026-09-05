@@ -180,30 +180,9 @@ async function processSingleAccount(currentIndex, totalCount) {
   const verifyRes = await verifyMagicLink(emailData.email, magicLink);
   console.log(`  -> ${verifyRes.message || 'Verifikasi Berhasil'}`);
 
-  const details = verifyRes.data || {};
-
   return {
-    success: true,
     email: emailData.email,
-    inbox_url: emailData.inboxUrl,
-    magic_link: magicLink,
-    account_info: {
-      uid: details.uid || null,
-      status: details.status || 'ACTIVE',
-      membership_status: details.membershipStatus || 'PREMIUM_ACTIVE',
-      plan_name: details.planName || 'Alight Motion Pro / Member',
-      subscription_type: details.subscriptionType || 'Yearly VIP License',
-      order_id: details.orderId || null,
-      valid_until: details.validUntil || null,
-      activated_at: details.activatedAt || null
-    },
-    features: details.features || [],
-    tokens: {
-      token_type: details.tokenType || 'Bearer',
-      id_token: details.idToken || details.tokens?.idToken || null,
-      refresh_token: details.refreshToken || details.tokens?.refreshToken || null,
-      expires_at: details.expiresAt || null
-    }
+    inbox_url: emailData.inboxUrl
   };
 }
 
@@ -214,22 +193,13 @@ async function runBatch(totalCount) {
   }
 
   const results = [];
-  let successCount = 0;
-  let failedCount = 0;
 
   for (let i = 1; i <= count; i++) {
     try {
       const result = await processSingleAccount(i, count);
       results.push(result);
-      successCount++;
     } catch (err) {
       console.error(`[-] Gagal memproses akun #${i}: ${err.message}`);
-      results.push({
-        success: false,
-        index: i,
-        error: err.message
-      });
-      failedCount++;
     }
 
     if (i < count) {
@@ -238,12 +208,8 @@ async function runBatch(totalCount) {
   }
 
   const finalOutput = {
-    status: successCount > 0,
-    summary: {
-      total_diminta: count,
-      total_berhasil: successCount,
-      total_gagal: failedCount
-    },
+    status: results.length > 0,
+    total: results.length,
     data: results
   };
 
