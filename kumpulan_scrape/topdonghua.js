@@ -66,6 +66,22 @@ function parseStreamProvider(url) {
   }
 }
 
+async function getDailymotionDirectStream(videoId) {
+  if (!videoId) return null;
+  try {
+    const res = await axios.get(`https://www.dailymotion.com/player/metadata/video/${videoId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://geo.dailymotion.com/'
+      },
+      timeout: 5000
+    });
+    return res.data?.qualities?.auto?.[0]?.url || null;
+  } catch (err) {
+    return null;
+  }
+}
+
 function extractCardsFromGrid($, $grid) {
   const items = [];
   $grid.find('a').each((_, el) => {
@@ -350,6 +366,18 @@ async function scrapeWatchDetail(url) {
       });
     }
 
+    for (const server of servers) {
+      if (server.stream_url && server.provider === 'dailymotion' && server.video_id) {
+        server.direct_stream_url = await getDailymotionDirectStream(server.video_id);
+      } else {
+        server.direct_stream_url = null;
+      }
+    }
+
+    const availableServer = servers.find((s) => s.stream_url && !s.is_locked) || servers[0] || null;
+    const primaryStreamUrl = availableServer ? availableServer.stream_url : (decodedServers[0] || null);
+    const primaryDirectStreamUrl = availableServer ? availableServer.direct_stream_url : null;
+
     const episodes = [];
     $('.wat-ep-link').each((_, el) => {
       const $ep = $(el);
@@ -363,6 +391,7 @@ async function scrapeWatchDetail(url) {
         episode: epNum,
         title: epTitle,
         url: resolveUrl(epHref),
+        stream_url: isCurrent ? primaryStreamUrl : null,
         is_current: isCurrent,
         is_locked: isEpLocked
       });
@@ -382,6 +411,8 @@ async function scrapeWatchDetail(url) {
         release_date: releaseDate,
         is_locked: isLocked,
         unlock_countdown: countdown,
+        stream_url: primaryStreamUrl,
+        direct_stream_url: primaryDirectStreamUrl,
         series,
         navigation: {
           previous: prevUrl,
