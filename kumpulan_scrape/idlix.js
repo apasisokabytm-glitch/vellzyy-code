@@ -2,7 +2,7 @@
  * Judul : IDLIX Streaming Movie, Series & Shorts Scraper
  * Base Url : https://z2.idlixku.com
  * Author : Vellzyy
- * Deskripsi : Scraper untuk mengambil daftar home page, pencarian film & serial, detail movie/series lengkap dengan episode & link nonton (watch), serta Shorts dari IDLIX.
+ * Deskripsi : Scraper untuk mengambil daftar home page, pencarian film & serial, detail movie/series lengkap dengan episode & link stream (HLS/m3u8), serta Shorts dari IDLIX.
  * Channel Author : https://whatsapp.com/channel/0029VbD89K11CYoQIft8sQ3b
  * Channel ke dua : https://whatsapp.com/channel/0029VbDl6c1KmCPJErq9ox3F
  */
@@ -20,14 +20,26 @@ const DEFAULT_HEADERS = {
   'Accept': 'application/json, text/plain, */*'
 };
 
+const jar = {};
+
 const client = axios.create({
   baseURL: API_BASE_URL,
   headers: DEFAULT_HEADERS,
-  timeout: 15000
+  timeout: 20000,
+  withCredentials: true
 });
 
 client.interceptors.response.use(
-  response => response,
+  res => {
+    const setCookies = res.headers['set-cookie'];
+    if (setCookies) {
+      for (const c of setCookies) {
+        const parts = c.split(';')[0].split('=');
+        jar[parts[0].trim()] = parts.slice(1).join('=');
+      }
+    }
+    return res;
+  },
   async error => {
     const config = error.config;
     if (!config || config.__isRetry) {
@@ -44,6 +56,12 @@ client.interceptors.response.use(
   }
 );
 
+client.interceptors.request.use(cfg => {
+  const cookieStr = Object.entries(jar).map(([k, v]) => k + '=' + v).join('; ');
+  if (cookieStr) cfg.headers['Cookie'] = cookieStr;
+  return cfg;
+});
+
 function formatImageUrl(path, size = 'w500') {
   if (!path) return null;
   if (path.startsWith('http://') || path.startsWith('https://')) return path;
@@ -59,6 +77,57 @@ function cleanSlug(input) {
   clean = clean.replace(/\?.*$/i, '');
   clean = clean.replace(/^\/+|\/+$/g, '');
   return clean;
+}
+
+async function extractStream(type, contentId, episodeId = null) {
+  try {
+    const trackBody = {
+      contentType: type === 'movie' ? 'movie' : 'tv_series',
+      contentId,
+      ...(episodeId ? { episodeId } : {})
+    };
+    await client.post('/api/views/track', trackBody);
+
+    const playInfoType = type === 'movie' ? 'movie' : 'episode';
+    const playInfoId = type === 'movie' ? contentId : episodeId;
+    const playRes = await client.get(`/api/watch/play-info/${playInfoType}/${playInfoId}`);
+    const playInfo = playRes.data;
+
+    if (!playInfo || !playInfo.gateToken) return null;
+
+    const waitMs = Math.max(0, (playInfo.unlockAt - playInfo.serverNow) + 500);
+    await new Promise(r => setTimeout(r, Math.min(waitMs, 16000)));
+
+    const claimRes = await client.post('/api/watch/session/claim', { gateToken: playInfo.gateToken });
+    const claimData = claimRes.data;
+
+    if (claimData && claimData.redeemUrl && claimData.claim) {
+      const redeemRes = await axios.post(claimData.redeemUrl, { claim: claimData.claim }, {
+        headers: {
+          'Content-Type': 'text/plain',
+          'Origin': BASE_URL,
+          'Referer': `${BASE_URL}/`
+        },
+        timeout: 10000
+      });
+
+      if (redeemRes.data && redeemRes.data.url) {
+        return {
+          stream_url: redeemRes.data.url,
+          video_id: redeemRes.data.videoId || null,
+          max_height: claimData.maxHeight || null,
+          subtitles: (redeemRes.data.subtitles || []).map(s => ({
+            lang: s.lang,
+            label: s.label,
+            url: s.path
+          }))
+        };
+      }
+    }
+  } catch (err) {
+    // fallback gracefully
+  }
+  return null;
 }
 
 function mapMediaItem(item) {
@@ -87,7 +156,7 @@ function mapMediaItem(item) {
       poster,
       still_poster: formatImageUrl(item.stillPath, 'w500'),
       url: `${BASE_URL}/series/${seriesSlug}/season/${seasonNum}/episode/${epNum}`,
-      watch_url: `${BASE_URL}/series/${seriesSlug}/season/${seasonNum}/episode/${epNum}`
+      stream_url: `${BASE_URL}/series/${seriesSlug}/season/${seasonNum}/episode/${epNum}`
     };
   }
 
@@ -116,7 +185,7 @@ function mapMediaItem(item) {
     poster: formatImageUrl(dataItem.posterPath, 'w500'),
     backdrop: formatImageUrl(dataItem.backdropPath, 'original'),
     url: `${BASE_URL}/${type}/${slug}`,
-    watch_url: `${BASE_URL}/${type}/${slug}`
+    stream_url: `${BASE_URL}/${type}/${slug}`
   };
 }
 
@@ -223,6 +292,11 @@ async function getDetail(targetUrl) {
     const releaseDate = m.releaseDate || null;
     const year = releaseDate ? parseInt(String(releaseDate).substring(0, 4), 10) : null;
 
+    let directStream = null;
+    if (m.hasVideo && m.id) {
+      directStream = await extractStream('movie', m.id);
+    }
+
     return {
       status: true,
       type: 'movie',
@@ -252,7 +326,12 @@ async function getDetail(targetUrl) {
       backdrop: formatImageUrl(m.backdropPath, 'original'),
       backdrops: (m.backdrops || []).map(b => formatImageUrl(b, 'original')),
       url: `${BASE_URL}/movie/${slug}`,
-      watch_url: `${BASE_URL}/movie/${slug}`,
+      stream_url: directStream ? directStream.stream_url : `${BASE_URL}/movie/${slug}`,
+      subtitles: directStream ? directStream.subtitles : [],
+      stream_data: directStream ? {
+        video_id: directStream.video_id,
+        max_height: directStream.max_height
+      } : null,
       trailer_url: m.trailerUrl || null,
       play_info_api: m.id ? `${API_BASE_URL}/api/watch/play-info/movie/${m.id}` : null,
       has_video: Boolean(m.hasVideo)
@@ -265,6 +344,8 @@ async function getDetail(targetUrl) {
     const year = firstAirDate ? parseInt(String(firstAirDate).substring(0, 4), 10) : null;
 
     const seasons = [];
+    let firstEpisodeResolvedStream = null;
+
     for (const sea of (s.seasons || [])) {
       const seasonNum = sea.seasonNumber || 1;
       let episodes = [];
@@ -280,13 +361,25 @@ async function getDetail(targetUrl) {
             air_date: e.airDate || null,
             runtime_minutes: e.runtime || null,
             still_poster: formatImageUrl(e.stillPath, 'w500'),
-            watch_url: `${BASE_URL}/series/${slug}/season/${seasonNum}/episode/${e.episodeNumber}`,
+            stream_url: `${BASE_URL}/series/${slug}/season/${seasonNum}/episode/${e.episodeNumber}`,
             play_info_api: e.id ? `${API_BASE_URL}/api/watch/play-info/episode/${e.id}` : null,
             has_video: Boolean(e.hasVideo)
           }));
         }
       } catch (e) {
         episodes = [];
+      }
+
+      if (seasonNum === 1 && episodes.length > 0 && episodes[0].has_video && !firstEpisodeResolvedStream) {
+        firstEpisodeResolvedStream = await extractStream('tv_series', s.id, episodes[0].id);
+        if (firstEpisodeResolvedStream) {
+          episodes[0].stream_url = firstEpisodeResolvedStream.stream_url;
+          episodes[0].subtitles = firstEpisodeResolvedStream.subtitles;
+          episodes[0].stream_data = {
+            video_id: firstEpisodeResolvedStream.video_id,
+            max_height: firstEpisodeResolvedStream.max_height
+          };
+        }
       }
 
       seasons.push({
@@ -299,6 +392,10 @@ async function getDetail(targetUrl) {
         episodes
       });
     }
+
+    const defaultStreamUrl = firstEpisodeResolvedStream 
+      ? firstEpisodeResolvedStream.stream_url 
+      : `${BASE_URL}/series/${slug}`;
 
     return {
       status: true,
@@ -327,6 +424,8 @@ async function getDetail(targetUrl) {
       poster: formatImageUrl(s.posterPath, 'w500'),
       backdrop: formatImageUrl(s.backdropPath, 'original'),
       url: `${BASE_URL}/series/${slug}`,
+      stream_url: defaultStreamUrl,
+      subtitles: firstEpisodeResolvedStream ? firstEpisodeResolvedStream.subtitles : [],
       trailer_url: s.trailerUrl || null,
       seasons
     };
@@ -360,7 +459,7 @@ async function getShorts() {
         poster: formatImageUrl(item.posterPath, 'w500'),
         backdrop: formatImageUrl(item.backdropPath, 'original'),
         shorts_url: `${BASE_URL}/shorts/${slug}`,
-        watch_url: `${BASE_URL}/${type}/${slug}`
+        stream_url: `${BASE_URL}/${type}/${slug}`
       };
     });
 
