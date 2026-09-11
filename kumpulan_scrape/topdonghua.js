@@ -2,7 +2,7 @@
  * Judul : TopDonghua Scraper
  * Base Url : https://topdonghua.com
  * Author : Vellzyy
- * Deskripsi : Scraper untuk mengambil data home (hot series, latest, ongoing, completed, popular) dan detail episode atau series (stream URL, server, episode list) dari topdonghua.com
+ * Deskripsi : Scraper untuk mengambil data home (hot series, latest, ongoing, completed, popular), search anime, dan detail episode atau series (stream URL, server, episode list) dari topdonghua.com
  * Channel Author : https://whatsapp.com/channel/0029VbD89K11CYoQIft8sQ3b
  * Channel ke dua : https://whatsapp.com/channel/0029VbDl6c1KmCPJErq9ox3F
  */
@@ -207,6 +207,59 @@ async function scrapeHome() {
     };
   } catch (err) {
     throw new Error(`Gagal mengambil data home topdonghua.com: ${err.message}`);
+  }
+}
+
+async function scrapeSearch(query) {
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    throw new Error('Query pencarian tidak boleh kosong');
+  }
+
+  const cleanQuery = query.trim();
+
+  try {
+    const response = await HTTP_CLIENT.get('/search.php', {
+      params: { q: cleanQuery }
+    });
+
+    if (response.status !== 200) {
+      throw new Error(`HTTP Status ${response.status}`);
+    }
+
+    const rawData = response.data;
+    const items = Array.isArray(rawData) ? rawData : [];
+
+    const formattedData = items.map((item) => {
+      const title = cleanText(item.title);
+      const slug = cleanText(item.slug);
+      const status = cleanText(item.status);
+      const type = cleanText(item.type);
+      const epNum = item.ep !== undefined && item.ep !== null ? Number(item.ep) : null;
+      const poster = item.poster ? resolveUrl(item.poster) : null;
+      const seriesUrl = slug ? resolveUrl(`/anime/${slug}`) : null;
+      const latestEpisodeUrl = slug && epNum ? resolveUrl(`/watch/${slug}-episode-${epNum}`) : null;
+
+      return {
+        title,
+        slug,
+        status,
+        type,
+        episode: epNum,
+        poster,
+        url: seriesUrl,
+        latest_episode_url: latestEpisodeUrl
+      };
+    });
+
+    return {
+      status: true,
+      source: `${BASE_URL}/search.php?q=${encodeURIComponent(cleanQuery)}`,
+      query: cleanQuery,
+      total: formattedData.length,
+      data: formattedData
+    };
+  } catch (err) {
+    throw new Error(`Gagal melakukan pencarian di topdonghua.com: ${err.message}`);
   }
 }
 
@@ -435,6 +488,26 @@ if (require.main === module) {
         console.error(JSON.stringify({ status: false, error: err.message }, null, 2));
         process.exit(1);
       });
+  } else if (args.includes('--search')) {
+    const searchIndex = args.indexOf('--search');
+    const query = args.slice(searchIndex + 1).join(' ').trim();
+
+    if (!query) {
+      console.error(JSON.stringify({
+        status: false,
+        error: 'Query pencarian diperlukan setelah --search. Contoh: node topdonghua.js --search "demon hunter"'
+      }, null, 2));
+      process.exit(1);
+    }
+
+    scrapeSearch(query)
+      .then((result) => {
+        console.log(JSON.stringify(result, null, 2));
+      })
+      .catch((err) => {
+        console.error(JSON.stringify({ status: false, error: err.message }, null, 2));
+        process.exit(1);
+      });
   } else if (args.includes('--detail')) {
     const detailIndex = args.indexOf('--detail');
     const detailUrl = args[detailIndex + 1];
@@ -458,9 +531,10 @@ if (require.main === module) {
   } else {
     console.log(JSON.stringify({
       status: false,
-      message: 'Perintah tidak dikenal. Gunakan flag --home atau --detail <url>',
+      message: 'Perintah tidak dikenal. Gunakan flag --home, --search <query>, atau --detail <url>',
       usage: [
         'node topdonghua.js --home',
+        'node topdonghua.js --search "demon hunter"',
         'node topdonghua.js --detail "https://topdonghua.com/watch/the-demon-hunter-season-3-episode-27"'
       ]
     }, null, 2));
@@ -470,6 +544,7 @@ if (require.main === module) {
 
 module.exports = {
   scrapeHome,
+  scrapeSearch,
   scrapeDetail,
   scrapeWatchDetail,
   scrapeAnimeDetail
