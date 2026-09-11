@@ -241,16 +241,70 @@ async function searchContent(query) {
   }
 }
 
-async function getDetail(targetUrl) {
+async function getDetail(targetUrl, targetSeason = null, targetEpisode = null) {
   if (!targetUrl || !targetUrl.trim()) {
     throw new Error('Parameter target URL atau slug tidak boleh kosong');
   }
 
   const raw = targetUrl.trim();
-  const slug = cleanSlug(raw);
+
+  // Deteksi jika user memasukkan URL episode spesifik
+  // contoh: https://z2.idlixku.com/series/the-early-spring-2026/season/1/episode/20
+  const episodeUrlMatch = raw.match(/\/series\/([^/]+)\/season\/(\d+)\/episode\/(\d+)/i);
+  let requestedSeason = targetSeason ? parseInt(targetSeason, 10) : null;
+  let requestedEpisode = targetEpisode ? parseInt(targetEpisode, 10) : null;
+  let slug = '';
+
+  if (episodeUrlMatch) {
+    slug = episodeUrlMatch[1];
+    requestedSeason = parseInt(episodeUrlMatch[2], 10);
+    requestedEpisode = parseInt(episodeUrlMatch[3], 10);
+  } else {
+    slug = cleanSlug(raw);
+  }
 
   if (!slug) {
     throw new Error(`URL atau slug tidak valid: ${targetUrl}`);
+  }
+
+  // Jika requestedEpisode terdeteksi, ambil detail episode spesifik beserta direct stream_url
+  if (requestedEpisode !== null && !isNaN(requestedEpisode)) {
+    const sRes = await client.get(`/api/series/${slug}`);
+    const seriesData = sRes.data;
+    const seasonNum = requestedSeason || 1;
+    const epRes = await client.get(`/api/series/${slug}/season/${seasonNum}`);
+    const episodes = epRes.data?.season?.episodes || [];
+    const episode = episodes.find(e => e.episodeNumber === requestedEpisode) || episodes[0];
+
+    if (!episode) {
+      throw new Error(`Episode ${requestedEpisode} tidak ditemukan pada season ${seasonNum}`);
+    }
+
+    let directStream = null;
+    if (episode.hasVideo && episode.id) {
+      directStream = await extractStream('tv_series', seriesData.id, episode.id);
+    }
+
+    return {
+      status: true,
+      type: 'episode',
+      series_title: seriesData.title || '',
+      series_slug: slug,
+      season_number: seasonNum,
+      episode_number: episode.episodeNumber,
+      title: episode.name || `Episode ${episode.episodeNumber}`,
+      overview: episode.overview || null,
+      air_date: episode.airDate || null,
+      runtime_minutes: episode.runtime || null,
+      still_poster: formatImageUrl(episode.stillPath, 'w500'),
+      stream_url: directStream ? directStream.stream_url : `${BASE_URL}/series/${slug}/season/${seasonNum}/episode/${episode.episodeNumber}`,
+      subtitles: directStream ? directStream.subtitles : [],
+      stream_data: directStream ? {
+        video_id: directStream.video_id,
+        max_height: directStream.max_height
+      } : null,
+      has_video: Boolean(episode.hasVideo)
+    };
   }
 
   const isExplicitSeries = raw.includes('/series/');
@@ -333,7 +387,6 @@ async function getDetail(targetUrl) {
         max_height: directStream.max_height
       } : null,
       trailer_url: m.trailerUrl || null,
-      play_info_api: m.id ? `${API_BASE_URL}/api/watch/play-info/movie/${m.id}` : null,
       has_video: Boolean(m.hasVideo)
     };
   }
@@ -361,8 +414,8 @@ async function getDetail(targetUrl) {
             air_date: e.airDate || null,
             runtime_minutes: e.runtime || null,
             still_poster: formatImageUrl(e.stillPath, 'w500'),
+            episode_url: `${BASE_URL}/series/${slug}/season/${seasonNum}/episode/${e.episodeNumber}`,
             stream_url: `${BASE_URL}/series/${slug}/season/${seasonNum}/episode/${e.episodeNumber}`,
-            play_info_api: e.id ? `${API_BASE_URL}/api/watch/play-info/episode/${e.id}` : null,
             has_video: Boolean(e.hasVideo)
           }));
         }
@@ -426,6 +479,10 @@ async function getDetail(targetUrl) {
       url: `${BASE_URL}/series/${slug}`,
       stream_url: defaultStreamUrl,
       subtitles: firstEpisodeResolvedStream ? firstEpisodeResolvedStream.subtitles : [],
+      stream_data: firstEpisodeResolvedStream ? {
+        video_id: firstEpisodeResolvedStream.video_id,
+        max_height: firstEpisodeResolvedStream.max_height
+      } : null,
       trailer_url: s.trailerUrl || null,
       seasons
     };
@@ -474,12 +531,12 @@ async function getShorts() {
   }
 }
 
-async function getDetailShorts(targetUrl) {
+async function getDetailShorts(targetUrl, targetSeason = null, targetEpisode = null) {
   if (!targetUrl || !targetUrl.trim()) {
     throw new Error('Parameter URL atau slug shorts tidak boleh kosong');
   }
 
-  const detail = await getDetail(targetUrl);
+  const detail = await getDetail(targetUrl, targetSeason, targetEpisode);
   return {
     status: true,
     category: 'Shorts Detail',
@@ -495,9 +552,9 @@ if (require.main === module) {
     console.log(`Penggunaan IDLIX Scraper:
   node kumpulan_scrape/idlix.js --home
   node kumpulan_scrape/idlix.js --search <query>
-  node kumpulan_scrape/idlix.js --detail <url_movie_or_series>
+  node kumpulan_scrape/idlix.js --detail <url_movie_or_series_or_episode> [episode_number] [season_number]
   node kumpulan_scrape/idlix.js --shorts
-  node kumpulan_scrape/idlix.js --detailshorts <url_shorts>
+  node kumpulan_scrape/idlix.js --detailshorts <url_shorts> [episode_number] [season_number]
 `);
     process.exit(0);
   }
@@ -527,7 +584,9 @@ if (require.main === module) {
       });
   } else if (command === '--detail') {
     const targetUrl = args[1] || 'libang-libu-2026';
-    getDetail(targetUrl)
+    const epArg = args[2] || null;
+    const seaArg = args[3] || null;
+    getDetail(targetUrl, seaArg, epArg)
       .then(res => {
         console.log(JSON.stringify(res, null, 2));
         console.log('\nTEST RESULT: TRUE');
@@ -550,7 +609,9 @@ if (require.main === module) {
       });
   } else if (command === '--detailshorts') {
     const targetUrl = args[1] || 'i-am-groot-2022';
-    getDetailShorts(targetUrl)
+    const epArg = args[2] || null;
+    const seaArg = args[3] || null;
+    getDetailShorts(targetUrl, seaArg, epArg)
       .then(res => {
         console.log(JSON.stringify(res, null, 2));
         console.log('\nTEST RESULT: TRUE');
