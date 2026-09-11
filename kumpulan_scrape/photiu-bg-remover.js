@@ -2,7 +2,7 @@
  * Judul : Photiu AI Background Remover
  * Base Url : https://www.photiu.ai
  * Author : Vellzyy
- * Deskripsi : Scraper background remover menggunakan endpoint internal Photiu AI untuk memproses gambar dari URL atau file lokal menjadi PNG transparan tanpa latar belakang.
+ * Deskripsi : Scraper background remover menggunakan endpoint internal Photiu AI untuk memproses gambar dari URL atau file lokal menjadi PNG transparan tanpa latar belakang serta mengunggah hasilnya ke CDN zass.in.
  * Channel Author : https://whatsapp.com/channel/0029VbD89K11CYoQIft8sQ3b
  * Channel ke dua : https://whatsapp.com/channel/0029VbDl6c1KmCPJErq9ox3F
  */
@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 
 const BASE_URL = 'https://www.photiu.ai';
+const CDN_UPLOAD_URL = 'https://cdn.zass.in/upload';
 const ENDPOINTS = {
   RMBG: 'https://www.photiu.ai/api/tools/img_rmbg',
   CUTOUT: 'https://www.photiu.ai/api/cutout'
@@ -75,6 +76,31 @@ function extractServerError(response) {
     }
   }
   return null;
+}
+
+async function uploadToCdn(buffer, filename = 'nobg.png', timeout = 30000) {
+  try {
+    const form = new FormData();
+    form.append('file', buffer, {
+      filename,
+      contentType: 'image/png'
+    });
+
+    const response = await axios.post(CDN_UPLOAD_URL, form.getBuffer(), {
+      headers: {
+        ...form.getHeaders(),
+        'User-Agent': DEFAULT_HEADERS['User-Agent']
+      },
+      timeout
+    });
+
+    if (response.data && response.data.url) {
+      return response.data.url;
+    }
+    return null;
+  } catch (err) {
+    return null;
+  }
 }
 
 async function resolveImageSource(source, timeout = 30000) {
@@ -234,11 +260,15 @@ async function removeBackground(source, options = {}) {
     savedFilePath = outputPath;
   }
 
+  const cdnFilename = 'nobg_' + Date.now() + '.png';
+  const cdnUrl = await uploadToCdn(resultPngBuffer, cdnFilename, timeout);
+
   const base64Data = resultPngBuffer.toString('base64');
 
   return {
     status: true,
     data: {
+      url: cdnUrl,
       source: typeof source === 'string' ? source : 'buffer',
       source_type: imageMeta.sourceType,
       original_filename: imageMeta.filename,
@@ -265,6 +295,7 @@ if (require.main === module) {
       const displayData = {
         status: result.status,
         data: {
+          url: result.data.url,
           source: result.data.source,
           source_type: result.data.source_type,
           original_filename: result.data.original_filename,
