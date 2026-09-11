@@ -104,20 +104,32 @@ async function getTikTokStories(usernameOrUrl) {
     };
 
     const stories = rawItems.map((item, index) => {
+      const isMusicUrl = (url) => typeof url === 'string' && (url.includes('music.tiktokcdn') || url.includes('-music') || url.includes('.mp3'));
       const hasImages = Array.isArray(item.images) && item.images.length > 0;
-      const mediaType = hasImages ? 'image' : 'video';
+      const isAudioPlay = isMusicUrl(item.play) || isMusicUrl(item.hdplay);
+      const isImage = hasImages || isAudioPlay || item.duration === 0;
+      const mediaType = isImage ? 'image' : 'video';
+
       const coverUrl = item.cover || item.origin_cover || item.ai_dynamic_cover || null;
-      const videoStreamUrl = item.hdplay || item.play || null;
+      const videoStreamUrl = mediaType === 'video' ? (item.hdplay || item.play || null) : null;
+
+      let images = [];
+      if (hasImages) {
+        images = item.images;
+      } else if (mediaType === 'image' && coverUrl) {
+        images = [coverUrl];
+      }
 
       let music = null;
-      if (item.music_info) {
+      if (item.music_info || isAudioPlay) {
+        const musicInfo = item.music_info || {};
         music = {
-          id: item.music_info.id || null,
-          title: item.music_info.title || null,
-          author: item.music_info.author || null,
-          duration: item.music_info.duration || 0,
-          music_url: item.music_info.play || item.music || null,
-          cover: item.music_info.cover || null
+          id: musicInfo.id || null,
+          title: musicInfo.title || null,
+          author: musicInfo.author || null,
+          duration: musicInfo.duration || 0,
+          music_url: musicInfo.play || musicInfo.music || (isAudioPlay ? item.play : null),
+          cover: musicInfo.cover || null
         };
       }
 
@@ -130,9 +142,9 @@ async function getTikTokStories(usernameOrUrl) {
         timestamp: item.create_time || null,
         duration: item.duration || 0,
         cover: coverUrl,
-        download_url: mediaType === 'video' ? videoStreamUrl : (item.images && item.images[0] ? item.images[0] : coverUrl),
+        download_url: mediaType === 'video' ? videoStreamUrl : (images[0] || coverUrl),
         video_url: videoStreamUrl,
-        images: hasImages ? item.images : [],
+        images,
         stats: {
           views: item.play_count !== undefined ? item.play_count : 0,
           likes: item.digg_count !== undefined ? item.digg_count : 0,
