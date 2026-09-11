@@ -2,7 +2,7 @@
  * Judul : Photiu AI Background Remover
  * Base Url : https://www.photiu.ai
  * Author : Vellzyy
- * Deskripsi : Scraper background remover menggunakan endpoint internal Photiu AI untuk memproses gambar dari URL atau file lokal menjadi PNG transparan tanpa latar belakang serta mengunggah hasilnya ke CDN zass.in.
+ * Deskripsi : Scraper background remover menggunakan endpoint internal Photiu AI untuk menghapus latar belakang gambar dan mengunggah hasilnya langsung ke CDN sebagai URL gambar.
  * Channel Author : https://whatsapp.com/channel/0029VbD89K11CYoQIft8sQ3b
  * Channel ke dua : https://whatsapp.com/channel/0029VbDl6c1KmCPJErq9ox3F
  */
@@ -97,9 +97,9 @@ async function uploadToCdn(buffer, filename = 'nobg.png', timeout = 30000) {
     if (response.data && response.data.url) {
       return response.data.url;
     }
-    return null;
+    throw new Error('Response CDN tidak berisi URL');
   } catch (err) {
-    return null;
+    throw new Error(`Gagal mengupload gambar hasil ke CDN zass.in: ${err.message}`);
   }
 }
 
@@ -263,22 +263,18 @@ async function removeBackground(source, options = {}) {
   const cdnFilename = 'nobg_' + Date.now() + '.png';
   const cdnUrl = await uploadToCdn(resultPngBuffer, cdnFilename, timeout);
 
-  const base64Data = resultPngBuffer.toString('base64');
-
   return {
     status: true,
     data: {
+      image: cdnUrl,
       url: cdnUrl,
       source: typeof source === 'string' ? source : 'buffer',
       source_type: imageMeta.sourceType,
       original_filename: imageMeta.filename,
-      original_mimetype: imageMeta.mimeType,
       format: 'png',
       mime_type: 'image/png',
       size_bytes: resultPngBuffer.length,
-      saved_path: savedFilePath,
-      base64: `data:image/png;base64,${base64Data}`,
-      buffer: resultPngBuffer
+      saved_path: savedFilePath
     }
   };
 }
@@ -292,21 +288,7 @@ if (require.main === module) {
 
   removeBackground(targetSource, { output: outputPath })
     .then((result) => {
-      const displayData = {
-        status: result.status,
-        data: {
-          url: result.data.url,
-          source: result.data.source,
-          source_type: result.data.source_type,
-          original_filename: result.data.original_filename,
-          format: result.data.format,
-          mime_type: result.data.mime_type,
-          size_bytes: result.data.size_bytes,
-          saved_path: result.data.saved_path,
-          base64_preview: result.data.base64.substring(0, 80) + '...'
-        }
-      };
-      console.log(JSON.stringify(displayData, null, 2));
+      console.log(JSON.stringify(result, null, 2));
       console.log('\nTEST RESULT: TRUE');
     })
     .catch((error) => {
