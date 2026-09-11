@@ -263,19 +263,21 @@ async function removeBackground(source, options = {}) {
   const cdnFilename = 'nobg_' + Date.now() + '.png';
   const cdnUrl = await uploadToCdn(resultPngBuffer, cdnFilename, timeout);
 
+  const responseData = {
+    url: cdnUrl,
+    filename: imageMeta.filename,
+    format: 'png',
+    mime_type: 'image/png',
+    size_bytes: resultPngBuffer.length
+  };
+
+  if (savedFilePath) {
+    responseData.saved_path = savedFilePath;
+  }
+
   return {
     status: true,
-    data: {
-      image: cdnUrl,
-      url: cdnUrl,
-      source: typeof source === 'string' ? source : 'buffer',
-      source_type: imageMeta.sourceType,
-      original_filename: imageMeta.filename,
-      format: 'png',
-      mime_type: 'image/png',
-      size_bytes: resultPngBuffer.length,
-      saved_path: savedFilePath
-    }
+    data: responseData
   };
 }
 
