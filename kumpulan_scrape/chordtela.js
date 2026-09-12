@@ -66,6 +66,113 @@ function getSectionForChar(char) {
 }
 
 /**
+ * Mencari URL lagu di Chordtela berdasarkan nama lagu.
+ * Memadukan query lagu, prediksi artis, dan penelusuran direktori Chordtela.
+ * @param {string} songQuery Nama lagu atau artis + judul
+ */
+async function findSongUrl(songQuery) {
+  const q = songQuery.trim();
+  if (q.startsWith('http')) return q;
+
+  const words = q.split(/\s+/);
+  const candidateArtists = [];
+  let trackTitle = q;
+
+  // 1. Cek iTunes Search API untuk membantu menebak artis dan judul lagu resmi
+  try {
+    const itunesRes = await axios.get(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=10`,
+      { timeout: 5000 }
+    );
+    if (itunesRes.data && itunesRes.data.results && Array.isArray(itunesRes.data.results)) {
+      for (const item of itunesRes.data.results) {
+        if (item.artistName && !candidateArtists.includes(item.artistName)) {
+          candidateArtists.push(item.artistName);
+        }
+        if (item.trackName && trackTitle === q) {
+          trackTitle = item.trackName;
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2. Tambahkan variasi dari query input user
+  if (!candidateArtists.includes(q)) candidateArtists.push(q);
+  if (words.length > 1) {
+    candidateArtists.push(words.slice(0, 2).join(' '));
+    candidateArtists.push(words[0]);
+  }
+
+  // 3. Telusuri direktori alfabet Chordtela untuk menemukan halaman artis
+  for (const artistName of candidateArtists) {
+    if (!artistName || artistName.length < 2) continue;
+    const firstChar = artistName.trim().charAt(0);
+    const section = getSectionForChar(firstChar);
+
+    try {
+      const dirHtml = await fetchPage(`${BASE_URL}/chord-gitar-${section}`);
+      const $dir = cheerio.load(dirHtml);
+
+      const aLower = artistName.toLowerCase();
+      let artistPageUrl = '';
+
+      $dir('a[href*="/chord/"], a[href*="/kumpulan-chord/"]').each((_, el) => {
+        const text = $dir(el).text().trim().toLowerCase();
+        const href = $dir(el).attr('href');
+        if (!href) return;
+        if (text === aLower || text.includes(aLower) || aLower.includes(text)) {
+          artistPageUrl = href;
+          return false;
+        }
+      });
+
+      // Jika halaman artis ditemukan, cari lagu di daftar lagu artis tersebut
+      if (artistPageUrl) {
+        const artistHtml = await fetchPage(artistPageUrl);
+        const $artist = cheerio.load(artistHtml);
+
+        let bestSongUrl = null;
+        let bestScore = 0;
+        const songKeywords = words.filter(w => !aLower.includes(w.toLowerCase()) && w.length >= 2);
+
+        $artist('a[href*=".html"]').each((_, el) => {
+          const songText = $artist(el).text().trim().toLowerCase();
+          const href = $artist(el).attr('href');
+          if (!href || !href.match(/\/\d{4}\/\d{2}\//)) return;
+
+          let score = 0;
+          if (trackTitle && songText.includes(trackTitle.toLowerCase())) {
+            score += 50;
+          }
+          if (songText.includes(q.toLowerCase())) {
+            score += 40;
+          }
+          for (const kw of songKeywords) {
+            if (songText.includes(kw.toLowerCase())) {
+              score += 20;
+            }
+          }
+          if (songKeywords.length === 0 && score === 0) {
+            score = 1;
+          }
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestSongUrl = href;
+          }
+        });
+
+        if (bestSongUrl && bestScore > 0) {
+          return bestSongUrl;
+        }
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+/**
  * Mengambil detail chord dan lirik dari halaman lagu Chordtela.
  * @param {string} songUrl URL lagu chordtela (contoh: https://www.chordtela.com/2014/10/last-child-indahkah-perbedaan.html)
  */
@@ -116,28 +223,42 @@ async function getChord(songUrl) {
   // 1. Full Chord Sheet dengan posisi kunci di atas lirik
   const preChord = pre.clone();
   preChord.find('a.tbi-tooltip span').remove();
-  const fullChordText = preChord.text().trim();
+  let fullChordText = preChord.text().trim();
+  fullChordText = fullChordText.replace(/<iframe[\s\S]*?<\/iframe>/gi, '').trim();
 
   let easyChord = fullChordText;
   let originalChord = null;
-  if (fullChordText.includes('===ORIGINAL CHORD===')) {
-    const parts = fullChordText.split(/[-=\s]*===ORIGINAL CHORD===*[-=\s]*/);
+  const splitRegex = /(?:[-=\s]*===ORIGINAL CHORD===*[-=\s]*|[-=\s]*\|\|\s*sebelum di sederhanakan[\s\S]*?\|\|[-=\s]*)/i;
+  if (splitRegex.test(fullChordText)) {
+    const parts = fullChordText.split(splitRegex);
     easyChord = parts[0].trim();
     originalChord = parts[1] ? parts[1].trim() : null;
+  }
+
+  // Bersihkan baris judul yang berulang di baris pertama
+  if (easyChord.toLowerCase().startsWith(cleanTitle.toLowerCase())) {
+    easyChord = easyChord.slice(cleanTitle.length).trim();
+  }
+  if (originalChord && originalChord.toLowerCase().startsWith(cleanTitle.toLowerCase())) {
+    originalChord = originalChord.slice(cleanTitle.length).trim();
   }
 
   // 2. Lirik murni tanpa simbol chord
   const lyricsLines = easyChord.split('\n')
     .map(line => {
-      if (/capo/i.test(line)) return '';
-      if (/^(intro|outro|interlude|solo|bridge|musik)\s*[:.]/i.test(line.trim())) return '';
-      const chordTokens = line.trim().split(/\s+/);
+      const trimmed = line.trim();
+      if (/capo/i.test(trimmed)) return '';
+      if (/<iframe/i.test(trimmed) || /youtube\.com/i.test(trimmed)) return '';
+      if (/^[-=|_~]{2,}/.test(trimmed)) return '';
+      if (/^(intro|outro|interlude|solo|bridge|musik)\s*[:.]/i.test(trimmed)) return '';
+
+      const chordTokens = trimmed.split(/\s+/);
       const isAllChords = chordTokens.length > 0 && chordTokens.every(token => {
         const cleanToken = token.replace(/[-.:~[\]()0-9x\/]/gi, '');
         return cleanToken === '' || chordsSet.has(cleanToken);
       });
       if (isAllChords) return '';
-      return line.trim();
+      return trimmed;
     })
     .filter(line => line.length > 0);
 
@@ -156,6 +277,28 @@ async function getChord(songUrl) {
       lyrics: cleanLyrics
     }
   };
+}
+
+/**
+ * Mengambil chord dan lirik lagu berdasarkan nama lagu atau URL langsung.
+ * @param {string} songNameOrUrl Judul lagu (misal: "semua tentang kita") atau URL langsung
+ */
+async function getChordBySong(songNameOrUrl) {
+  if (!songNameOrUrl || typeof songNameOrUrl !== 'string') {
+    throw new Error('Nama lagu atau URL wajib diisi.');
+  }
+
+  const query = songNameOrUrl.trim();
+  if (query.startsWith('http')) {
+    return await getChord(query);
+  }
+
+  const foundUrl = await findSongUrl(query);
+  if (!foundUrl) {
+    throw new Error(`Lagu "${query}" tidak ditemukan di Chordtela.`);
+  }
+
+  return await getChord(foundUrl);
 }
 
 /**
@@ -233,146 +376,54 @@ async function getArtistChords(artistSlugOrUrl) {
   };
 }
 
-/**
- * Mencari artis dan lagu di Chordtela berdasarkan query pencarian.
- * @param {string} query Kata kunci pencarian
- */
-async function searchChord(query) {
-  if (!query || typeof query !== 'string') {
-    throw new Error('Query pencarian wajib diisi.');
-  }
-
-  const q = query.trim().toLowerCase();
-  const words = q.split(/\s+/);
-  const section = getSectionForChar(words[0].charAt(0));
-
-  const html = await fetchPage(`${BASE_URL}/chord-gitar-${section}`);
-  const $ = cheerio.load(html);
-
-  const matchedArtists = [];
-  $('a[href*="/chord/"], a[href*="/kumpulan-chord/"]').each((_, el) => {
-    const name = $(el).text().trim();
-    const href = $(el).attr('href');
-    if (!name || !href) return;
-    const lowerName = name.toLowerCase();
-
-    if (lowerName === q || lowerName.includes(q) || q.includes(lowerName) || lowerName.includes(words[0])) {
-      if (!matchedArtists.some(a => a.url === href)) {
-        matchedArtists.push({ name, url: href });
-      }
-    }
-  });
-
-  const songs = [];
-  if (matchedArtists.length > 0) {
-    const topArtist = matchedArtists[0];
-    const artistHtml = await fetchPage(topArtist.url);
-    const $artist = cheerio.load(artistHtml);
-
-    $artist('a[href*=".html"]').each((_, el) => {
-      const songTitle = $artist(el).text().trim();
-      const href = $artist(el).attr('href');
-      if (href && href.match(/\/\d{4}\/\d{2}\//) && songTitle) {
-        if (!songs.some(s => s.url === href)) {
-          const remainingKeywords = words.filter(w => !topArtist.name.toLowerCase().includes(w));
-          const matchSong = remainingKeywords.length === 0 || remainingKeywords.some(k => songTitle.toLowerCase().includes(k));
-          if (matchSong) {
-            songs.push({
-              title: songTitle.replace(/^Chord\s*/i, '').trim(),
-              artist: topArtist.name,
-              url: href
-            });
-          }
-        }
-      }
-    });
-  }
-
-  return {
-    status: true,
-    data: {
-      query,
-      matched_artists: matchedArtists.slice(0, 5),
-      total_songs: songs.length,
-      songs: songs.slice(0, 15)
-    }
-  };
-}
-
 // Eksekusi CLI
 if (require.main === module) {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.log('Penggunaan CLI Chordtela Scraper:');
-    console.log('  node chordtela.js --url "<song_url>"       : Ambil detail chord dan lirik lagu');
-    console.log('  node chordtela.js --home                   : Ambil daftar chord terbaru & pilihan');
-    console.log('  node chordtela.js --artist "<artist_slug>" : Ambil semua lagu dari artis tertentu');
-    console.log('  node chordtela.js --search "<query>"       : Cari artis dan lagu chord');
-    console.log('\nMenjalankan demo chord terbaru...');
+    console.log('Penggunaan CLI Chordtela:');
+    console.log('  node chordtela.js <nama lagu>');
+    console.log('  node chordtela.js <url lagu>');
+    console.log('\nContoh:');
+    console.log('  node chordtela.js semua tentang kita');
+    console.log('  node chordtela.js komang');
+    console.log('  node chordtela.js last child duka');
+    console.log('  node chordtela.js https://www.chordtela.com/2014/12/semua-tentang-kita-peterpan.html');
+    process.exit(0);
+  }
+
+  // Jika input adalah opsi --home atau --latest
+  if (args[0] === '--home' || args[0] === '--latest') {
     getHome()
       .then(res => console.log(JSON.stringify(res, null, 2)))
       .catch(err => {
         console.error('[ERROR]', err.message);
         process.exit(1);
       });
+  } else if (args[0] === '--artist') {
+    const artist = args.slice(1).join(' ');
+    getArtistChords(artist)
+      .then(res => console.log(JSON.stringify(res, null, 2)))
+      .catch(err => {
+        console.error('[ERROR]', err.message);
+        process.exit(1);
+      });
   } else {
-    const flag = args[0];
-    const val = args.slice(1).join(' ');
-
-    if (flag === '--home' || flag === '--latest') {
-      getHome()
-        .then(res => console.log(JSON.stringify(res, null, 2)))
-        .catch(err => {
-          console.error('[ERROR]', err.message);
-          process.exit(1);
-        });
-    } else if (flag === '--url' || (flag.startsWith('http') && flag.includes('.html'))) {
-      const targetUrl = flag === '--url' ? val : flag;
-      getChord(targetUrl)
-        .then(res => console.log(JSON.stringify(res, null, 2)))
-        .catch(err => {
-          console.error('[ERROR]', err.message);
-          process.exit(1);
-        });
-    } else if (flag === '--artist') {
-      getArtistChords(val)
-        .then(res => console.log(JSON.stringify(res, null, 2)))
-        .catch(err => {
-          console.error('[ERROR]', err.message);
-          process.exit(1);
-        });
-    } else if (flag === '--search') {
-      searchChord(val)
-        .then(res => console.log(JSON.stringify(res, null, 2)))
-        .catch(err => {
-          console.error('[ERROR]', err.message);
-          process.exit(1);
-        });
-    } else {
-      // Jika langsung memberikan query atau URL
-      if (flag.startsWith('http')) {
-        getChord(flag)
-          .then(res => console.log(JSON.stringify(res, null, 2)))
-          .catch(err => {
-            console.error('[ERROR]', err.message);
-            process.exit(1);
-          });
-      } else {
-        searchChord(args.join(' '))
-          .then(res => console.log(JSON.stringify(res, null, 2)))
-          .catch(err => {
-            console.error('[ERROR]', err.message);
-            process.exit(1);
-          });
-      }
-    }
+    // Default: Ambil nama lagu atau URL langsung dari argumen
+    const songInput = args[0] === '--url' ? args.slice(1).join(' ') : args.join(' ');
+    getChordBySong(songInput)
+      .then(res => console.log(JSON.stringify(res, null, 2)))
+      .catch(err => {
+        console.error('[ERROR]', err.message);
+        process.exit(1);
+      });
   }
 }
 
 module.exports = {
+  getChordBySong,
   getChord,
+  findSongUrl,
   getHome,
-  getArtistChords,
-  searchChord
+  getArtistChords
 };
