@@ -20,3 +20,21 @@ Jangan lupa untuk bergabung dengan **Channel WhatsApp** resmi untuk mendapatkan 
 <div align="center">
   <img src="https://komarev.com/ghpvc/?username=apasisokabytm-glitch&label=Repository+Views&color=blue&style=flat" alt="Views" />
 </div>
+
+## 🗂️ Struktur Folder
+Folder scraper telah dikelompokkan sesuai dengan kategorinya agar lebih rapi dan mudah ditemukan:
+
+- 📂 **`scrapers/anime-manga/`** – Scraper seputar anime & komik (Anichin, Manwhaku, TopDonghua, dll)
+- 📂 **`scrapers/movies-streaming/`** – Scraper film/streaming (Flixie, Idlix)
+- 📂 **`scrapers/music/`** – Scraper musik dan chord (Chordtela, Splay)
+- 📂 **`scrapers/news-info/`** – Scraper berita dan info (Detik, BMKG, Jadwal Sholat, MPL)
+- 📂 **`scrapers/social-media/`** – Scraper media sosial (IG Reels/Photo, Snaptik, Instastory)
+- 📂 **`scrapers/tools-utils/`** – Tools & utilitas (Speedtest, Tempmail, OCR, BG Remover, dll)
+
+## 🚀 Cara Menjalankan (Node.js / Bun)
+Pastikan kamu sudah menginstal *dependencies* yang dibutuhkan:
+```bash
+npm install
+# atau
+bun install
+```
